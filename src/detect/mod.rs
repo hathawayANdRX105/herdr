@@ -74,6 +74,7 @@ impl Agent {
         Self::Devin,
         Self::Antigravity,
         Self::Cline,
+        Self::Omp,
         Self::OpenCode,
         Self::GithubCopilot,
         Self::Kimi,
