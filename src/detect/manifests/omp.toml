@@ -1,28 +1,71 @@
 id = "omp"
-version = "2026.06.23.5"
+version = "2026.07.13.1"
 min_engine_version = 2
-updated_at = "2026-06-23T00:00:00Z"
+updated_at = "2026-07-13T00:00:00Z"
 aliases = ["oh-my-pi"]
 
-# Settings panel: freeze state while user navigates settings
+# Settings overlay (`topBorder(width, "Settings")` → "╭─ Settings")
+# Freeze previous state; not a real agent lifecycle transition.
 [[rules]]
 id = "settings_panel"
 state = "unknown"
-priority = 300
+priority = 400
 region = "whole_recent"
 skip_state_update = true
 contains = ["╭─ Settings"]
 
-# Blocked: waiting for user selection/confirmation
+# Interactive bash Console overlay (bash-interactive.ts)
+# Title "Console"; footer "esc force-kill · input forwarded to PTY".
+# User must type into the PTY → blocked.
 [[rules]]
-id = "blocked_prompt"
+id = "console_blocked"
 state = "blocked"
-priority = 280
+priority = 360
+region = "whole_recent"
+visible_blocker = true
+contains = ["Console"]
+any = [
+  { contains = ["force-kill"] },
+  { contains = ["input forwarded to PTY"] },
+]
+
+# Tool approval selector (extensions/wrapper.ts): options Approve / Deny
+# plus shared selector footer.
+[[rules]]
+id = "approval_blocked"
+state = "blocked"
+priority = 340
+region = "whole_recent"
+visible_blocker = true
+contains = ["Approve", "Deny"]
+any = [
+  { contains = ["up/down navigate"] },
+  { contains = ["enter select"] },
+]
+
+# Generic interactive selector / ask tool / hook confirm
+# (hook-selector default help: "up/down navigate  enter select  esc cancel")
+# Keep below Console/approval so those win on overlap.
+[[rules]]
+id = "selector_blocked"
+state = "blocked"
+priority = 320
 region = "whole_recent"
 visible_blocker = true
 contains = ["up/down navigate", "enter select"]
 
-# Working: Braille spinner character anywhere on screen
+# Working chrome: default loader text "Working…" (interactive-mode.ts)
+[[rules]]
+id = "working_literal"
+state = "working"
+priority = 220
+region = "whole_recent"
+visible_working = true
+contains = ["Working…"]
+
+# Working chrome: braille spinner on a line (tool-execution / loaders)
+# Exclude when Console overlay is visible (spinner can appear inside Console
+# while the pane is still waiting on the user).
 [[rules]]
 id = "spinner_working"
 state = "working"
@@ -30,24 +73,17 @@ priority = 200
 region = "whole_recent"
 visible_working = true
 line_regex = ['^\s*[\x{2800}-\x{28FF}]']
-
-# Idle: prompt box visible, no spinner running
-[[rules]]
-id = "prompt_idle"
-state = "idle"
-priority = 100
-region = "whole_recent"
-visible_idle = true
-contains = ["$ …"]
 not = [
-  { line_regex = ['^\s*[\x{2800}-\x{28FF}]'] },
+  { contains = ["Console"] },
+  { contains = ["force-kill"] },
+  { contains = ["up/down navigate"] },
 ]
 
-# Idle: welcome/logout screen (no prompt or spinner)
+# Idle welcome screen
 [[rules]]
 id = "welcome_idle"
 state = "idle"
-priority = 50
+priority = 80
 region = "whole_recent"
 visible_idle = true
 contains = ["Welcome back!"]
