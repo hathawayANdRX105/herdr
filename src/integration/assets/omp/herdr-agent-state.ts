@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=omp
-// HERDR_INTEGRATION_VERSION=4
+// HERDR_INTEGRATION_VERSION=5
 // @ts-nocheck
 
 import { createConnection } from "node:net";
@@ -232,11 +232,60 @@ function retryableErrorMessage(event: any): string | undefined {
   return errorMessage || "retryable provider error";
 }
 
-function askBlockedMessage(args: any): string {
-  const questions = Array.isArray(args?.questions) ? args.questions : [];
-  const firstQuestion = questions.find((question: any) => typeof question?.question === "string");
-  if (firstQuestion?.question) {
-    return firstQuestion.question;
+function askBlockedMessage(args: unknown): string {
+  if (!args || typeof args !== "object" || !("questions" in args)) {
+    return "waiting for user input";
+  }
+  const questions = args.questions;
+  if (!Array.isArray(questions)) {
+    return "waiting for user input";
+  }
+  for (const question of questions) {
+    if (
+      question &&
+      typeof question === "object" &&
+      "question" in question &&
+      typeof question.question === "string"
+    ) {
+      return question.question;
+    }
+  }
+  return "waiting for user input";
+}
+
+// OMP full-lifecycle hooks suppress screen detection. Interactive bash opens the
+// Console overlay and must report blocked, or herdr stays Working.
+function toolExecutionBlocksPane(event: unknown): boolean {
+  if (!event || typeof event !== "object" || !("toolName" in event)) {
+    return false;
+  }
+  if (event.toolName === "ask") {
+    return true;
+  }
+  if (event.toolName !== "bash") {
+    return false;
+  }
+  if (!("args" in event) || !event.args || typeof event.args !== "object") {
+    return false;
+  }
+  return "pty" in event.args && event.args.pty === true;
+}
+
+function toolExecutionBlockedMessage(event: unknown): string {
+  if (!event || typeof event !== "object" || !("toolName" in event)) {
+    return "waiting for user input";
+  }
+  if (event.toolName === "ask") {
+    return askBlockedMessage("args" in event ? event.args : undefined);
+  }
+  if (event.toolName === "bash") {
+    if ("args" in event && event.args && typeof event.args === "object" && "command" in event.args) {
+      const command = event.args.command;
+      if (typeof command === "string" && command.length > 0) {
+        return `Console: ${command}`;
+      }
+    }
+    return "Console";
   }
   return "waiting for user input";
 }
@@ -416,17 +465,17 @@ export default function (pi) {
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
-    if (event?.toolName !== "ask") {
+    if (!toolExecutionBlocksPane(event)) {
       return;
     }
     if (!rootSession && !activateRootSession(ctx)) {
       return;
     }
-    activateBlocked(askBlockedMessage(event.args));
+    activateBlocked(toolExecutionBlockedMessage(event));
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
-    if (event?.toolName !== "ask") {
+    if (!toolExecutionBlocksPane(event)) {
       return;
     }
     if (!rootSession && !activateRootSession(ctx)) {

@@ -2866,21 +2866,38 @@ fn omp_ask_and_approval_events_report_blocked_state() {
         .find("deactivateBlocked();")
         .expect("approval resolution should unblock the pane");
 
-    let ask_handler = omp_handler("tool_execution_start");
-    ask_handler
-        .find("event?.toolName !== \"ask\"")
-        .expect("tool execution handler should only treat Ask as blocked");
-    ask_handler
-        .find("activateBlocked(askBlockedMessage(event.args));")
-        .expect("Ask start should block the pane");
+    assert!(
+        OMP_EXTENSION_ASSET.contains("function toolExecutionBlocksPane(event: unknown): boolean"),
+        "omp extension should centralize interactive-tool blocked detection"
+    );
+    assert!(
+        OMP_EXTENSION_ASSET.contains("event.toolName === \"ask\""),
+        "Ask should block the pane"
+    );
+    assert!(
+        OMP_EXTENSION_ASSET.contains("event.toolName !== \"bash\""),
+        "interactive bash Console should block the pane"
+    );
+    assert!(
+        OMP_EXTENSION_ASSET.contains("event.args.pty === true"),
+        "bash Console block requires pty=true"
+    );
 
-    let ask_end_handler = omp_handler("tool_execution_end");
-    ask_end_handler
-        .find("event?.toolName !== \"ask\"")
-        .expect("tool execution end should only treat Ask as blocked");
-    ask_end_handler
+    let start_handler = omp_handler("tool_execution_start");
+    start_handler
+        .find("toolExecutionBlocksPane(event)")
+        .expect("tool start should gate blocked tools");
+    start_handler
+        .find("activateBlocked(toolExecutionBlockedMessage(event));")
+        .expect("blocking tool start should activate blocked state");
+
+    let end_handler = omp_handler("tool_execution_end");
+    end_handler
+        .find("toolExecutionBlocksPane(event)")
+        .expect("tool end should gate blocked tools");
+    end_handler
         .find("deactivateBlocked();")
-        .expect("Ask end should unblock the pane");
+        .expect("blocking tool end should unblock the pane");
 }
 
 #[test]
