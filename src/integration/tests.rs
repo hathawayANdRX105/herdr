@@ -2893,11 +2893,18 @@ fn omp_ask_and_approval_events_report_blocked_state() {
 
     let end_handler = omp_handler("tool_execution_end");
     end_handler
-        .find("toolExecutionBlocksPane(event)")
-        .expect("tool end should gate blocked tools");
+        .find("blockingToolCallIds.has(toolCallId)")
+        .expect("tool end should require a matching interactive tool start");
+    end_handler
+        .find("blockingToolCallIds.delete(toolCallId)")
+        .expect("tracked tool end should clear its call id");
     end_handler
         .find("deactivateBlocked();")
-        .expect("blocking tool end should unblock the pane");
+        .expect("tracked tool end should unblock the pane");
+    assert!(
+        OMP_EXTENSION_ASSET.contains("blockingToolCallIds.clear();"),
+        "session reset should clear tracked interactive tool calls"
+    );
 }
 
 #[test]

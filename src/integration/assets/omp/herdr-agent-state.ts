@@ -290,6 +290,7 @@ function toolExecutionBlockedMessage(event: unknown): string {
   return "waiting for user input";
 }
 
+
 export default function (pi) {
   if (!enabled()) {
     return;
@@ -306,6 +307,7 @@ export default function (pi) {
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let rootSession = false;
+  const blockingToolCallIds = new Set<string>();
 
   function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
     if (timer) {
@@ -391,6 +393,7 @@ export default function (pi) {
     agentActive = false;
     blockedCount = 0;
     blockedMessage = undefined;
+    blockingToolCallIds.clear();
   }
 
   function activateBlocked(message: string | undefined) {
@@ -471,15 +474,32 @@ export default function (pi) {
     if (!rootSession && !activateRootSession(ctx)) {
       return;
     }
+    const toolCallId =
+      event && typeof event === "object" && "toolCallId" in event && typeof event.toolCallId === "string"
+        ? event.toolCallId
+        : undefined;
+    if (toolCallId) {
+      blockingToolCallIds.add(toolCallId);
+    }
     activateBlocked(toolExecutionBlockedMessage(event));
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
-    if (!toolExecutionBlocksPane(event)) {
+    const toolCallId =
+      event && typeof event === "object" && "toolCallId" in event && typeof event.toolCallId === "string"
+        ? event.toolCallId
+        : undefined;
+    const tracked = toolCallId
+      ? blockingToolCallIds.has(toolCallId)
+      : event?.toolName === "ask";
+    if (!tracked) {
       return;
     }
     if (!rootSession && !activateRootSession(ctx)) {
       return;
+    }
+    if (toolCallId) {
+      blockingToolCallIds.delete(toolCallId);
     }
     deactivateBlocked();
   });

@@ -73,7 +73,10 @@ function configureIntegrationEnvironment(recordingSocketPath: string) {
   process.env.HERDR_PANE_ID = "test:p1";
 }
 
-async function startRecordingServer(name: string): Promise<unknown[]> {
+async function startRecordingServer(
+  name: string,
+  onRequest?: (request: unknown) => void,
+): Promise<unknown[]> {
   const recordingSocketPath = join(tmpdir(), `herdr-${name}-${process.pid}.sock`);
   socketPath = recordingSocketPath;
   await rm(recordingSocketPath, { force: true });
@@ -88,7 +91,9 @@ async function startRecordingServer(name: string): Promise<unknown[]> {
       if (newline === -1) {
         return;
       }
-      requests.push(JSON.parse(input.slice(0, newline)));
+      const request = JSON.parse(input.slice(0, newline));
+      requests.push(request);
+      onRequest?.(request);
       socket.end("{}\n");
     });
   });
@@ -254,6 +259,57 @@ test("Pi waits for a replacement session report before publishing state", async 
     "pane.report_agent_session",
     "pane.report_agent",
   ]);
+});
+
+test("Oh My Pi Console end without args unblocks the pane", async () => {
+  let blockedSeen = false;
+  let resolveBlocked: (() => void) | undefined;
+  let resolveWorkingAfterBlocked: (() => void) | undefined;
+  const blocked = new Promise<void>((resolve) => {
+    resolveBlocked = resolve;
+  });
+  const workingAfterBlocked = new Promise<void>((resolve) => {
+    resolveWorkingAfterBlocked = resolve;
+  });
+  await startRecordingServer("omp-console-end", (request) => {
+    if (!isRecord(request) || request.method !== "pane.report_agent") {
+      return;
+    }
+    const params = request.params;
+    if (!isRecord(params) || typeof params.state !== "string") {
+      return;
+    }
+    if (params.state === "blocked") {
+      blockedSeen = true;
+      resolveBlocked?.();
+    } else if (blockedSeen && params.state === "working") {
+      resolveWorkingAfterBlocked?.();
+    }
+  });
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    hasUI: true,
+    isIdle: () => false,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  await handlers.get("tool_execution_start")?.(
+    { toolCallId: "console-1", toolName: "bash", args: { command: "bash", pty: true } },
+    context,
+  );
+  await blocked;
+
+  await handlers.get("tool_execution_end")?.(
+    { toolCallId: "console-1", toolName: "bash", result: {}, isError: false },
+    context,
+  );
+  await workingAfterBlocked;
 });
 
 test("Pi retries working state after an unanswered socket attempt", async () => {

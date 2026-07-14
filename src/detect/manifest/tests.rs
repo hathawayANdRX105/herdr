@@ -410,6 +410,22 @@ fn omp_manifest_detects_console_selector_working_and_idle() {
         Some("spinner_working")
     );
 
+    for incidental_text in [
+        "Console output\n⠋ Reading files",
+        "up/down navigate docs\n⠋ Reading files",
+    ] {
+        let incidental_spinner = explain(Agent::Omp, incidental_text);
+        assert_eq!(incidental_spinner.state, AgentState::Working);
+        assert!(incidental_spinner.visible_working);
+        assert_eq!(
+            incidental_spinner
+                .matched_rule
+                .as_ref()
+                .map(|rule| rule.id.as_str()),
+            Some("spinner_working")
+        );
+    }
+
     let console_with_spinner = explain(
         Agent::Omp,
         "⠋\nConsole bash -i\nesc force-kill · input forwarded to PTY",
@@ -432,14 +448,16 @@ fn omp_manifest_detects_console_selector_working_and_idle() {
         Some("welcome_idle")
     );
 
-    let settings = explain(Agent::Omp, "╭─ Settings ────────────────────────────╮\n│ General                               │");
+    let settings = explain(
+        Agent::Omp,
+        "╭─ Settings ────────────────────────────╮\n│ General                               │",
+    );
     assert!(settings.skip_state_update);
     assert_eq!(
         settings.matched_rule.as_ref().map(|rule| rule.id.as_str()),
         Some("settings_panel")
     );
 }
-
 
 #[test]
 fn manifest_validation_rejects_unknown_fields_empty_rules_invalid_regions_and_regexes() {
