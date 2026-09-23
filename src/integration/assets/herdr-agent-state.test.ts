@@ -518,6 +518,62 @@ async function startDroppedFirstResponseServer(name: string) {
   };
 }
 
+test("Oh My Pi stays working through a todo reminder continuation", async () => {
+  const requests = await startRecordingServer("omp-todo-reminder");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    hasUI: true,
+    isIdle: () => false,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestStates(requests).length === 1);
+
+  handlers.get("todo_reminder")?.({ todos: [], attempt: 1, maxAttempts: 3 }, context);
+  handlers.get("agent_end")?.({ messages: [] }, context);
+  expect(requestStates(requests)).toEqual(["working"]);
+
+  handlers.get("agent_start")?.({}, context);
+  handlers.get("agent_end")?.({ messages: [] }, context);
+  await waitFor(() => requestStates(requests).length === 2);
+  expect(requestStates(requests)).toEqual(["working", "idle"]);
+});
+
+test("Oh My Pi ignores a delayed end after a todo continuation starts", async () => {
+  const requests = await startRecordingServer("omp-todo-reminder-reordered");
+  process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/herdr-agent-state.ts");
+  install(pi);
+
+  const context = {
+    hasUI: true,
+    isIdle: () => false,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestStates(requests).length === 1);
+
+  handlers.get("todo_reminder")?.({ todos: [], attempt: 1, maxAttempts: 3 }, context);
+  handlers.get("agent_start")?.({}, context);
+  handlers.get("agent_end")?.({ messages: [] }, context);
+  expect(requestStates(requests)).toEqual(["working"]);
+
+  handlers.get("agent_end")?.({ messages: [] }, context);
+  await waitFor(() => requestStates(requests).length === 2);
+  expect(requestStates(requests)).toEqual(["working", "idle"]);
+});
+
 test("Oh My Pi retries working before a queued idle state", async () => {
   const { attemptedRequests } = await startDroppedFirstResponseServer("omp-retry");
   process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "0";
