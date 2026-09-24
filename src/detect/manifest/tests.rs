@@ -785,3 +785,103 @@ contains = ["active"]
 "#;
     assert!(parse_manifest(manifest).is_err());
 }
+
+#[test]
+fn omp_manifest_detects_console_selector_working_and_idle() {
+    let console = explain(
+        Agent::Omp,
+        "╭──────────────────────────────────────────────╮\n│ ⠿ Console sleep 30 [running]                 │\n│ $ sleep 30                                    │\n│ esc force-kill · input forwarded to PTY       │\n╰──────────────────────────────────────────────╯",
+    );
+    assert_eq!(console.state, AgentState::Blocked);
+    assert!(console.visible_blocker);
+    assert_eq!(
+        console.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("console_blocked")
+    );
+
+    let approval = explain(
+        Agent::Omp,
+        "Tool bash requires approval\n\n❯ Approve\n  Deny\n\nup/down navigate  enter select  esc cancel",
+    );
+    assert_eq!(approval.state, AgentState::Blocked);
+    assert!(approval.visible_blocker);
+    assert_eq!(
+        approval.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("approval_blocked")
+    );
+
+    let selector = explain(
+        Agent::Omp,
+        "Choose an option\n\n❯ Yes\n  No\n\nup/down navigate  enter select  esc cancel",
+    );
+    assert_eq!(selector.state, AgentState::Blocked);
+    assert!(selector.visible_blocker);
+    assert_eq!(
+        selector.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("selector_blocked")
+    );
+
+    let working = explain(Agent::Omp, "Working… (esc to interrupt)");
+    assert_eq!(working.state, AgentState::Working);
+    assert!(working.visible_working);
+    assert_eq!(
+        working.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("working_literal")
+    );
+
+    let spinner = explain(Agent::Omp, "  ⠋ Reading files");
+    assert_eq!(spinner.state, AgentState::Working);
+    assert!(spinner.visible_working);
+    assert_eq!(
+        spinner.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("spinner_working")
+    );
+
+    for incidental_text in [
+        "Console output\n⠋ Reading files",
+        "up/down navigate docs\n⠋ Reading files",
+    ] {
+        let incidental_spinner = explain(Agent::Omp, incidental_text);
+        assert_eq!(incidental_spinner.state, AgentState::Working);
+        assert!(incidental_spinner.visible_working);
+        assert_eq!(
+            incidental_spinner
+                .matched_rule
+                .as_ref()
+                .map(|rule| rule.id.as_str()),
+            Some("spinner_working")
+        );
+    }
+
+    let console_with_spinner = explain(
+        Agent::Omp,
+        "⠋\nConsole bash -i\nesc force-kill · input forwarded to PTY",
+    );
+    assert_eq!(console_with_spinner.state, AgentState::Blocked);
+    assert!(console_with_spinner.visible_blocker);
+    assert_eq!(
+        console_with_spinner
+            .matched_rule
+            .as_ref()
+            .map(|rule| rule.id.as_str()),
+        Some("console_blocked")
+    );
+
+    let welcome = explain(Agent::Omp, "Welcome back!\n\nTip: use /help");
+    assert_eq!(welcome.state, AgentState::Idle);
+    assert!(welcome.visible_idle);
+    assert_eq!(
+        welcome.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("welcome_idle")
+    );
+
+    let settings = explain(
+        Agent::Omp,
+        "╭─ Settings ────────────────────────────╮\n│ General                               │",
+    );
+    assert!(settings.skip_state_update);
+    assert_eq!(
+        settings.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("settings_panel")
+    );
+}

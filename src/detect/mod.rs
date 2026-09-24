@@ -95,7 +95,7 @@ impl Agent {
         Self::Muse,
     ];
 
-    pub const SCREEN_MANIFEST_AGENTS: [Self; 22] = [
+    pub const SCREEN_MANIFEST_AGENTS: [Self; 23] = [
         Self::Pi,
         Self::Claude,
         Self::Codex,
@@ -104,6 +104,7 @@ impl Agent {
         Self::Devin,
         Self::Antigravity,
         Self::Cline,
+        Self::Omp,
         Self::OpenCode,
         Self::GithubCopilot,
         Self::Kimi,
@@ -199,7 +200,9 @@ fn lookup_agent(name: &str) -> Option<Agent> {
     let name = path_basename(name);
     match name {
         "pi" => Some(Agent::Pi),
-        "claude" | "claude-code" => Some(Agent::Claude),
+        // `ccb` is the executable name of the community `claude-code-best`
+        // build, which installs `claude` as a symlink to `ccb`.
+        "claude" | "claude-code" | "ccb" => Some(Agent::Claude),
         "codex" => Some(Agent::Codex),
         "gemini" => Some(Agent::Gemini),
         "cursor" | "cursor-agent" => Some(Agent::Cursor),
@@ -909,6 +912,11 @@ mod tests {
         assert_eq!(identify_agent("pi"), Some(Agent::Pi));
         assert_eq!(identify_agent("claude"), Some(Agent::Claude));
         assert_eq!(identify_agent("claude-code"), Some(Agent::Claude));
+        assert_eq!(identify_agent("ccb"), Some(Agent::Claude));
+        assert_eq!(
+            identify_agent("/home/user/.npm-global/bin/ccb"),
+            Some(Agent::Claude)
+        );
         assert_eq!(identify_agent("codex"), Some(Agent::Codex));
         assert_eq!(identify_agent("gemini"), Some(Agent::Gemini));
         assert_eq!(identify_agent("cursor"), Some(Agent::Cursor));
