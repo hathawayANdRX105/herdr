@@ -1,294 +1,358 @@
 name: CI
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   push:
-    branches: [master, windows]
+    branches: [main, "feature/*", "feat/*", "perf/*"]
+  pull_request:
+    branches: [main, "feat/*", "perf/*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  RUST_TOOLCHAIN_VERSION: 1.96.1
-  # Keep file/line backtraces without generating type and variable debug information.
-  CARGO_PROFILE_DEV_DEBUG: "1"
-  CARGO_PROFILE_TEST_DEBUG: "1"
-  # Persist both Zig caches; local build outputs otherwise stay in the uncached vendor tree.
-  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-  ZIG_LOCAL_CACHE_DIR: ${{ github.workspace }}/.zig-cache
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  conventional-commits:
-    if: github.event_name != 'push' || github.ref_name == 'master'
+  # ── TS 质量：lint + typecheck + test ──
+  quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Validate commit subjects
-        if: github.event_name == 'push'
-        run: python3 scripts/conventional_commits.py --range "${{ github.event.before }}..${{ github.event.after }}"
-
-      - name: Validate PR title
-        if: github.event_name == 'pull_request'
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: python3 scripts/conventional_commits.py "$PR_TITLE"
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
 
-  check:
-    name: check (${{ matrix.os }})
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        env:
+          CLAUDE_CODE_SKIP_CHROME_MCP_SETUP: "1"
+        run: bun install --frozen-lockfile
+
+      - name: Lint and format check
+        run: bunx biome ci .
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Test with Coverage
+        run: |
+          # Tolerate pre-existing flaky tests (Bun mock pollution / order-dependent state).
+          # We still require lcov.info to be generated and contain real coverage data.
+          set -o pipefail
+          bun test --coverage --coverage-reporter lcov --coverage-dir coverage 2>&1 | grep -vE '^\s*(\(pass\)|\(skip\))' | sed '/^.*\/__tests__\/.*:$/d' | cat -s
+          test -s coverage/lcov.info
+          grep -q '^SF:' coverage/lcov.info
+
+  # ── Rust native：5 平台矩阵（产物供 package 打包内嵌）──
+  native:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            kind: unix
-            nextest_filter: all()
-          - os: macos-latest
-            kind: unix
-            nextest_filter: not binary(live_handoff)
-          - os: windows-latest
-            kind: windows
+          # Linux x86_64（GNU，链接 glibc —— 运行时与本仓库现有 native 产物一致）
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          # Linux ARM64（aarch64 服务器 / ARM 容器）
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            cross: true
+          # macOS ARM64（Apple Silicon）
+          - os: macos-14
+            target: aarch64-apple-darwin
+          # macOS x86_64 —— Intel macos-13 runner 容量枯竭长期排队；
+          # macos-14 (arm64) 交叉编译，macOS 通用 SDK 原生支持 -arch x86_64
+          - os: macos-14
+            target: x86_64-apple-darwin
+          # Windows x86_64（MSVC）
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
 
-      - name: Install Rust
-        if: matrix.kind == 'unix'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
-          components: rustfmt,clippy
+          targets: ${{ matrix.target }}
 
-      - name: Install Rust
-        if: matrix.kind == 'windows'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
-          components: rustfmt,clippy
-          targets: x86_64-pc-windows-msvc
-
-      - name: Install Rust tools
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2.81.9
-        with:
-          tool: just,cargo-nextest
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.14
-
-      - name: Install Zig
-        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
-        with:
-          version: 0.16.0
-
-      # Zig's C-header cache keys include the compiler installation path.
-      - name: Stabilize Zig installation path on Unix
-        if: matrix.kind == 'unix'
+      - name: Install cross-compilation tools (aarch64 linux)
+        if: matrix.cross
         run: |
-          stable_zig="$RUNNER_TEMP/herdr-zig-0.16.0"
-          mv "$(dirname "$(command -v zig)")" "$stable_zig"
-          echo "$stable_zig" >> "$GITHUB_PATH"
-          echo "ZIG=$stable_zig/zig" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
-      - name: Stabilize Zig installation path on Windows
-        if: matrix.kind == 'windows'
+      - name: Build (token-counter)
+        working-directory: packages/token-counter-napi/native
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (transcript-parser)
+        if: hashFiles('packages/transcript-parser-napi/native/Cargo.toml') != ''
+        working-directory: packages/transcript-parser-napi/native
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (color-diff)
+        if: hashFiles('packages/color-diff-napi/native/Cargo.toml') != ''
+        working-directory: packages/color-diff-napi/native
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (file-index)
+        if: hashFiles('packages/file-index-napi/native/Cargo.toml') != ''
+        working-directory: packages/file-index-napi/native
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # 统一整理产物到 vendor 布局：vendor/<name>/<triple>/<name>.node
+      - name: Stage artifacts (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p "stage/token-counter/${{ matrix.target }}" "stage/transcript-parser/${{ matrix.target }}" "stage/color-diff/${{ matrix.target }}" "stage/file-index/${{ matrix.target }}"
+          for name in token-counter transcript-parser color-diff file-index; do
+            crate="${name//-/_}_napi"
+            if [ -f "packages/$name-napi/native/target/${{ matrix.target }}/release/lib$crate.so" ]; then
+              cp "packages/$name-napi/native/target/${{ matrix.target }}/release/lib$crate.so" "stage/$name/${{ matrix.target }}/$name.node"
+            elif [ -f "packages/$name-napi/native/target/${{ matrix.target }}/release/lib$crate.dylib" ]; then
+              cp "packages/$name-napi/native/target/${{ matrix.target }}/release/lib$crate.dylib" "stage/$name/${{ matrix.target }}/$name.node"
+            fi
+          done
+          find stage -type f
+
+      - name: Stage artifacts (windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $source = Split-Path (Get-Command zig).Source
-          $stable = Join-Path $env:RUNNER_TEMP "herdr-zig-0.16.0"
-          Move-Item -LiteralPath $source -Destination $stable
-          $stable | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "ZIG=$(Join-Path $stable 'zig.exe')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item -ItemType Directory -Force -Path "stage/token-counter/${{ matrix.target }}", "stage/transcript-parser/${{ matrix.target }}", "stage/color-diff/${{ matrix.target }}", "stage/file-index/${{ matrix.target }}" | Out-Null
+          foreach ($name in @('token-counter', 'transcript-parser', 'color-diff', 'file-index')) {
+            $crate = $name -replace '-', '_'
+            $src = "packages/$name-napi/native/target/${{ matrix.target }}/release/${crate}_napi.dll"
+            if (Test-Path $src) { Copy-Item $src "stage/$name/${{ matrix.target }}/$name.node" }
+          }
 
-      - name: Restore Zig build cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
         with:
-          path: .zig-cache
-          key: zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.16.0-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.16.0-
+          name: native-${{ matrix.target }}
+          path: stage/
+          if-no-files-found: error
 
-      - name: Restore cargo cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+  # ── 打包：native 产物只在工作区填充 vendor/（不入 git）+ 一条 CLI 出完整 claude code ──
+  # scripts/build-all.mjs 与本地全流程是同一个入口（本地不带 --skip-native
+  # 时自己跑 cargo 编译多平台）。CI 端 native 来自上面矩阵的 artifact——
+  # 每次构建都现场编译 Rust，保证产物永远对应当前源码；vendor/ 不再回写仓库。
+  # compile.ts 默认启用 JSC bytecode 预编译（--version 1.16s→0.20s，代价体积 +53%）。
+  package:
+    needs: [quality, native]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
         with:
-          cache-bin: false
-          key: ${{ matrix.os }}
+          fetch-depth: 0
 
-      # Save before rust-cache's post-step removes incremental state. Cargo still
-      # rebuilds workspace targets; only rustc's validated query state is retained.
-      - name: Restore Windows incremental compiler state
-        if: matrix.kind == 'windows'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v8
         with:
-          path: target/debug/incremental
-          key: ci-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ env.CARGO_PROFILE_TEST_DEBUG }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'build.rs') }}-${{ github.sha }}
-          restore-keys: |
-            ci-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUST_TOOLCHAIN_VERSION }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}-${{ env.CARGO_PROFILE_TEST_DEBUG }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'build.rs') }}-
+          path: artifacts
 
-      - name: Run Linux lint
-        if: runner.os == 'Linux'
-        run: just lint
+      - name: Sync artifacts into vendor/
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in artifacts/native-*; do
+            triple="${dir#artifacts/native-}"
+            for name in token-counter transcript-parser color-diff file-index; do
+              if [ -d "$dir/$name/$triple" ]; then
+                mkdir -p "vendor/$name/$triple"
+                cp "$dir/$name/$triple/$name.node" "vendor/$name/$triple/"
+              fi
+            done
+          done
+          find vendor/token-counter vendor/transcript-parser vendor/color-diff vendor/file-index -name '*.node' 2>/dev/null | sort
 
-      - name: Run Linux tests
-        if: runner.os == 'Linux'
-        run: CARGO_INCREMENTAL=1 just ci-tests '${{ matrix.nextest_filter }}'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
+        with:
+          bun-version: latest
 
-      - name: Run macOS checks
-        if: runner.os == 'macOS'
-        run: just ci '${{ matrix.nextest_filter }}'
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
-      - name: Check scalar libghostty with runtime safety
-        if: runner.os == 'Linux'
+      - name: One-shot build (bundle + npm tarball)
+        run: node scripts/build-all.mjs --skip-native
+
+      # 产物架构断言：ELF 查 e_machine（offset 0x12），Mach-O 查 magic，PE 查 machine 字段。
+      # 此前 compile.targets 被 Bun 静默忽略，x86 host 曾把 arm64 名字编成 x86_64 ELF。
+      - name: Verify artifact architectures
+        run: |
+          check_elf() {
+            local file="$1" expect="$2"
+            local machine
+            machine=$(od -A n -t u1 -j 18 -N 2 "$file" | tr -s ' ' | sed 's/^ //')
+            [ "$machine" = "$expect" ] || { echo "  ✗ $file e_machine=$machine, expected $expect"; exit 1; }
+            echo "  ✓ $file (ELF e_machine=$machine)"
+          }
+          check_macho() {
+            local file="$1" expect="$2"  # cputype LE bytes, e.g. "12 0 0 1" = arm64
+            local magic
+            magic=$(od -A n -t x1 -N 4 "$file" | tr -d ' \n')
+            [ "$magic" = "cffaedfe" ] || { echo "  ✗ $file Mach-O magic=$magic, expected cffaedfe"; exit 1; }
+            local cputype
+            cputype=$(od -A n -t u1 -j 4 -N 4 "$file" | tr '\n' ' ' | tr -s ' ' | sed 's/^ //;s/ $//')
+            [ "$cputype" = "$expect" ] || { echo "  ✗ $file cputype bytes=$cputype, expected $expect"; exit 1; }
+            echo "  ✓ $file (Mach-O cputype bytes=$cputype)"
+          }
+          check_pe() {
+            local file="$1"
+            local mz lf machine
+            mz=$(od -A n -t x1 -N 2 "$file" | tr -d ' ')
+            [ "$mz" = "4d5a" ] || { echo "  ✗ $file missing MZ signature"; exit 1; }
+            lf=$(od -A n -t u4 -j 60 -N 4 "$file" | tr -d ' ')
+            machine=$(od -A n -t u2 -j $((lf + 4)) -N 2 "$file" | tr -d ' ')
+            [ "$machine" = "34404" ] || { echo "  ✗ $file PE machine=$machine, expected 34404 (0x8664)"; exit 1; }
+            echo "  ✓ $file (PE machine=0x8664)"
+          }
+          check_elf dist/ccb-linux-x64        "62 0"    # EM_X86_64
+          check_elf dist/ccb-linux-arm64     "183 0"   # EM_AARCH64
+          check_macho dist/ccb-darwin-x64     "7 0 0 1"    # x86_64 LE bytes (CPU_TYPE_X86_64 = 0x01000007)
+          check_macho dist/ccb-darwin-arm64  "12 0 0 1"    # arm64 LE bytes
+          check_pe dist/ccb-windows-x64.exe
+
+      # 产物运行时冒烟：--version 验证可执行；--check-commands 强制加载全部
+      # lazy shim——compile 下缺失模块曾以 "Cannot find module
+      # './commands/add-dir/index.js'" 崩溃 REPL（uncaught → 11s 清理 → exit 0），
+      # 在此处即失败。只跑 host 架构（linux-x64），其余平台由架构断言覆盖。
+      - name: Smoke test binary (linux-x64)
+        run: |
+          set -euo pipefail
+          chmod +x dist/ccb-linux-x64
+          out=$(dist/ccb-linux-x64 --version)
+          echo "  --version → $out"
+          dist/ccb-linux-x64 --check-commands
+          echo "  ✓ --check-commands: all command shims loaded"
+
+      # 启动性能靶点（阈值级回归由 bench-startup.ts 本机判定；此处为打包期
+      # 可见性观测——CI 机器波动大不设毫秒阈值，但 probe 本身崩溃仍会使
+      # job 失败）：bytecode 预编译后 --version 应在 ~1s 内（A/B 实测
+      # 中位 0.20s vs 非 bytecode 1.16s）。回归时对比历史 run 日志可见。
+      - name: Startup perf probes (linux-x64)
+        run: |
+          set -euo pipefail
+          for probe in --version --check-commands; do
+            for i in 1 2 3; do
+              s=$(date +%s%N)
+              dist/ccb-linux-x64 $probe > /dev/null 2>&1
+              e=$(date +%s%N)
+              echo "  probe[$probe] run$i: $(( (e-s)/1000000 ))ms"
+            done
+          done
+      # UPX 压缩 linux-x64（本地实测体积 -60%+）。在冒烟之后、上传之前，
+      # 保证压缩的是已验证可执行的二进制。--best 较慢但只跑一次可接受。
+      - name: Compress binary with UPX (linux-x64)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq upx-ucl >/dev/null
+          before=$(stat -c%s dist/ccb-linux-x64)
+          upx --best --lzma dist/ccb-linux-x64
+          after=$(stat -c%s dist/ccb-linux-x64)
+          echo "  UPX: $((before/1048576))MB → $((after/1048576))MB ($((100*(before-after)/before))% smaller)"
+          # 压缩后必须仍能运行
+          dist/ccb-linux-x64 --version
+
+      - name: Upload compressed linux-x64 only
+        uses: actions/upload-artifact@v7
+        with:
+          name: ccb-linux-x64-upx
+          path: dist/ccb-linux-x64
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-code-dist
+          path: dist/
+
+      - name: Upload npm tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-code-npm
+          path: "*.tgz"
+          if-no-files-found: error
+
+  # ── ccb-client：Rust 薄 client 对 live shared acp daemon 的端到端冒烟 ──
+  # 协议层是手写 JSON-RPC，最容易在 id 关联 / 权限响应 / session/update
+  # 分发上回归，所以这里跑真 daemon 而非 mock：session/new 必须返回
+  # sessionId，session/prompt 必须被接受。LLM 调用在此环境无凭据会 403，
+  # 属预期；断言只覆盖握手与协议正确性。
+  ccb-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2, 2026-04-25
         env:
-          LIBGHOSTTY_VT_SIMD: "false"
-          LIBGHOSTTY_VT_OPTIMIZE: ReleaseSafe
-        run: CARGO_INCREMENTAL=1 just test-one ghostty
+          GIT_CONFIG_COUNT: 2
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
+          GIT_CONFIG_KEY_1: advice.defaultBranchName
+          GIT_CONFIG_VALUE_1: "false"
 
-      - name: Run Windows checks
-        if: matrix.kind == 'windows'
-        shell: pwsh
-        run: |
-          $env:CARGO_INCREMENTAL = "1"
-          just check
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Smoke ConPTY pane
-        if: matrix.kind == 'windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $exe = Join-Path $PWD "target\debug\herdr.exe"
-          .\scripts\windows_smoke_conpty_path.ps1 -ExePath $exe -Session "ci-windows-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+      - name: Build client
+        working-directory: ccb-client
+        run: cargo build --release
 
-  windows-conpty-package:
-    name: Windows ConPTY package
-    runs-on: windows-2022
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Clippy (warnings as errors)
+        working-directory: ccb-client
+        run: cargo clippy --release -- -D warnings
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2, 2026-04-25
         with:
-          persist-credentials: false
+          bun-version: latest
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+      - name: Install dependencies
+        env:
+          CLAUDE_CODE_SKIP_CHROME_MCP_SETUP: "1"
+        run: bun install --frozen-lockfile
+
+      - name: Smoke test against live shared acp daemon
+        working-directory: ccb-client
+        env:
+          CLAUDE_SHARED_SOCKET: /tmp/claude-acp-ci.sock
+          CCB_DEBUG: /tmp/ccb-wire.log
+        run: |
+          set -euo pipefail
+          # 1. 起 daemon（dev 模式保留 shared acp 的手动 arg 分支）
+          ( bun run dev shared acp > /tmp/acp-daemon.log 2>&1 & echo $! > /tmp/acp-daemon.pid )
+          for _ in $(seq 1 60); do
+            [ -S "$CLAUDE_SHARED_SOCKET" ] && break
+            sleep 0.5
+          done
+          [ -S "$CLAUDE_SHARED_SOCKET" ] || { echo "daemon never listened"; cat /tmp/acp-daemon.log; exit 1; }
+          echo "  ✓ daemon listening on $CLAUDE_SHARED_SOCKET"
+
+          # 2. 跑 client，喂一条 prompt，等握手完成。无 TTY 用 script 造一个。
+          { printf 'hello'; sleep 0.3; printf '\r'; sleep 8; printf 'q'; sleep 0.5; } \
+            | script -qec "./target/release/ccb-client $CLAUDE_SHARED_SOCKET" /tmp/ccb-tui.log >/dev/null 2>&1 || true
+
+          # 3. 断言 wire：session/new 必须被发出且收到带 sessionId 的响应
+          echo "--- wire log ---"; cat "$CCB_DEBUG"
+          grep -q '"method":"initialize"' "$CCB_DEBUG" || { echo "missing initialize request"; exit 1; }
+          grep -q '"sessionId"' "$CCB_DEBUG" || { echo "daemon never returned a sessionId"; exit 1; }
+          grep -q '"method":"session/prompt"' "$CCB_DEBUG" || { echo "missing session/prompt request"; exit 1; }
+          echo "  ✓ initialize → session/new → sessionId, session/prompt sent"
+
+          kill "$(cat /tmp/acp-daemon.pid)" 2>/dev/null || true
+
+      - name: Upload wire + TUI logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
-          targets: x86_64-pc-windows-msvc
-
-      - name: Install Zig
-        uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
-        with:
-          version: 0.16.0
-
-      - name: Stabilize Zig installation path
-        shell: pwsh
-        run: |
-          $source = Split-Path (Get-Command zig).Source
-          $stable = Join-Path $env:RUNNER_TEMP "herdr-zig-0.16.0"
-          Move-Item -LiteralPath $source -Destination $stable
-          $stable | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "ZIG=$(Join-Path $stable 'zig.exe')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Restore Zig build cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .zig-cache
-          key: zig-build-v1-conpty-package-windows-2022-${{ runner.arch }}-0.16.0-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            zig-build-v1-conpty-package-windows-2022-${{ runner.arch }}-0.16.0-
-
-      - name: Restore Cargo cache
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          cache-bin: false
-          key: conpty-package-windows-2022
-
-      - name: Build Herdr
-        run: cargo build --locked --target x86_64-pc-windows-msvc
-
-      - name: Verify invalid bundle is rejected and system override recovers
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          Remove-Item Env:HERDR_SOCKET_PATH, Env:HERDR_CLIENT_SOCKET_PATH -ErrorAction SilentlyContinue
-          $exe = Join-Path $PWD "target\x86_64-pc-windows-msvc\debug\herdr.exe"
-          $bundle = Join-Path (Split-Path -Parent $exe) "conpty"
-          New-Item -ItemType Directory -Force -Path (Join-Path $bundle "x64"), (Join-Path $bundle "arm64") | Out-Null
-          Set-Content -LiteralPath (Join-Path $bundle "herdr-conpty.json") -Value "{}" -Encoding ascii
-          [System.IO.File]::WriteAllBytes((Join-Path $bundle "conpty.dll"), [byte[]](0x48, 0x45, 0x52, 0x44, 0x52))
-          [System.IO.File]::WriteAllBytes((Join-Path $bundle "x64\OpenConsole.exe"), [byte[]](0x48, 0x45, 0x52, 0x44, 0x52))
-          [System.IO.File]::WriteAllBytes((Join-Path $bundle "arm64\OpenConsole.exe"), [byte[]](0x48, 0x45, 0x52, 0x44, 0x52))
-          try {
-            $rejected = $false
-            try {
-              .\scripts\windows_smoke_conpty_path.ps1 `
-                -ExePath $exe `
-                -Session "ci-conpty-invalid-windows-2022-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-            } catch {
-              if ($_.Exception.Message -notlike "workspace create failed with exit code*") {
-                throw
-              }
-              $rejected = $true
-            }
-            if (-not $rejected) {
-              throw "Herdr accepted a tampered app-local ConPTY bundle"
-            }
-
-            $env:HERDR_WINDOWS_CONPTY = "system"
-            .\scripts\windows_smoke_conpty_path.ps1 `
-              -ExePath $exe `
-              -Session "ci-conpty-system-windows-2022-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          } finally {
-            Remove-Item Env:HERDR_WINDOWS_CONPTY -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $bundle -Recurse -Force -ErrorAction SilentlyContinue
-          }
-
-      - name: Build and verify official ConPTY package
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
-          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
-          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          .\scripts\package_windows_conpty.ps1 `
-            -HerdrExe target\x86_64-pc-windows-msvc\debug\herdr.exe `
-            -PackagePath $package `
-            -StageDir $stage `
-            -OutputPath artifacts\herdr-windows-x86_64.zip
-          "HERDR_CONPTY_PACKAGE_DIR=$stage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Probe enhanced pane input with bundled ConPTY
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $exe = Join-Path $env:HERDR_CONPTY_PACKAGE_DIR "herdr.exe"
-          $consoleHost = Join-Path $env:HERDR_CONPTY_PACKAGE_DIR "conpty\x64\OpenConsole.exe"
-          .\scripts\windows_conpty_enhanced_input_probe.ps1 `
-            -ExePath $exe `
-            -Session "ci-conpty-bundled-windows-2022-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" `
-            -ExpectedConsoleHostPath $consoleHost
-
-      - name: Test packaged installer and repair with Windows PowerShell 5.1
-        shell: pwsh
-        run: |
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
-            .\scripts\windows_install_conpty_package_test.ps1 `
-            -ArchivePath artifacts\herdr-windows-x86_64.zip
-          if ($LASTEXITCODE -ne 0) {
-            throw "Windows PowerShell installer test failed with exit code $LASTEXITCODE"
-          }
+          name: ccb-client-logs
+          path: |
+            /tmp/ccb-wire.log
+            /tmp/ccb-tui.log
+            /tmp/acp-daemon.log
+          if-no-files-found: ignore
