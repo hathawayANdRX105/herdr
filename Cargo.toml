@@ -82,3 +82,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# 开发/测试构建降 debuginfo + 关增量（sccache 缓存优先，取舍见 rust-dev-perf skill）
+[profile.dev]
+debug = "line-tables-only"
+incremental = false

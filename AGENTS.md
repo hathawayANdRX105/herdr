@@ -1,4 +1,4 @@
-<!-- managed by canon agents.yaml @ 2026-09-24 -->
+<!-- managed by canon agents.yaml @ 2026-10-02 -->
 ## herdr 约定
 
 Terminal based agent runtime for coding agents.
@@ -331,13 +331,13 @@ These rules are final for anyone who is not a verified maintainer under Scope an
 
 ## 发现处置纪律
 
-自动检查（gate 的 `FAIL`/`WARN`、`jev` L3 语义发现、CRG / `ocr review` 审查意见）
+自动检查（canon 的 `FAIL`/`WARN`、`jev` L3 语义发现、CRG / `ocr review` 审查意见）
 产出的是**发现**，不是判决。每条发现都必须被显式处置，不存在"绕过"这个选项。
 
 ### 先读规范，再改代码
 
 1. 拿到 finding，先读规则原文，确认这条发现到底要求什么：
-   - gate 规则总览：`.githooks/GATE_HANDBOOK.md`（无则 `canon/manual/gate.md`）
+   - canon 规则总览：`gate-spec` skill（正本）；各仓 `.githooks/spec/docs/SPEC_OVERVIEW.md` 为播种副本
    - 单条规则的参数（匹配范围 / 严重度 / harness）：`.githooks/spec/**/<rule>.yaml`
    - 项目适配说明（本仓为什么这么定）：`.agent/rules/gates.md`
 2. 不确定 finding 是否成立时，读完规则仍不能判定 → **记为待裁决**并在交付记录里写明，
@@ -356,7 +356,7 @@ These rules are final for anyone who is not a verified maintainer under Scope an
 
 ### 禁止糊弄式修复
 
-以下动作一律视为违规（无论 gate 是否因此变绿）：
+以下动作一律视为违规（无论 canon 是否因此变绿）：
 
 | 禁止 | 为什么 | 正确做法 |
 |---|---|---|
@@ -378,7 +378,7 @@ These rules are final for anyone who is not a verified maintainer under Scope an
 
 ### 规范层级
 
-- `.githooks/` 是 gate 领地：agent 不改规则。
+- `.githooks/` 是 canon 领地：agent 不改规则。
 - `.agent/rules/`、`specs/rules/` 是规范正本：发现规则与现实冲突 → 提 issue，不自行改写。
 - 本纪律与各仓既有条款冲突时，以本纪律为准（它更严格）。
 
@@ -417,6 +417,23 @@ These rules are final for anyone who is not a verified maintainer under Scope an
   不手工对齐，不在格式化工具之外争论风格。
 - lint 报错逐条判断：真问题就修；误报就在规则允许的方式下局部豁免并写明理由，
   不整文件关掉。
+
+## Rust 开发性能
+
+本仓 `.cargo/config.toml` 已配 `jobs = 4`（多会话并发上限）与
+`rustc-wrapper = sccache`（跨 worktree 编译缓存），`Cargo.toml` 已关增量、
+降 debuginfo。配置随 cargo 向上搜索对 `.wt/*` worktree 自动生效。
+
+- 跑测试用 `just test-fast`：testless 函数级影响分析，只跑本次改动可能破坏的
+  测试；testless 异常/零命中自动降级全量，绝不静默跳过。全量务必
+  `cargo test --workspace`（根包 workspace 下裸 `cargo test` 只跑根包）。
+- 不要在会话里自行 `export RUSTC_WRAPPER` 或改 jobs——统一走仓配置；
+  重命令照旧套 `cpulimit -l 70 -i`。
+- 增量编译已关（缓存优先）：同树连续小改动按 crate 级重编是预期行为，不是
+  回归；若本仓热重载明显变慢，提 issue 议局部放开。
+- 新建 `.wt` worktree 直接用；旧布局 worktree 若报 workspace 收编错误，
+  根因与修法见 canon 仓 `Cargo.toml` 的 `exclude` 注释。
+- 配置细节、坑清单与实测基线：skill `rust-dev-perf`。
 
 ## 构建与验证
 
@@ -485,7 +502,7 @@ These rules are final for anyone who is not a verified maintainer under Scope an
   `test:` / `ci:` / `build:` / `perf:` / `style:` / `revert:`）。
 - 标题**用英文**，正文可用中文。
 - 一个 commit 一件事。不把无关改动、格式化噪声、生成物混进逻辑改动。
-- 提交前跑对应检查（`gate pre-commit` / `gate pre-push`），不靠推送失败才发现。
+- 提交前跑对应检查（`canon pre-commit` / `canon pre-push`），不靠推送失败才发现。
 
 ### Issue
 
@@ -500,7 +517,7 @@ These rules are final for anyone who is not a verified maintainer under Scope an
   实现步骤 / 交付记录 / 怎么验证 / 检查清单。
 - 关联 issue 用 `Fixes #<n>` 收尾行；draft 阶段用 `Related #<n>`，合并授权前改 `Fixes`。
 - 开启或更新 PR 后看 CI 结果到底（`gh pr checks`），红了就修，不等用户来问。
-- 被 gate 拦下就修代码，**不改规则**。规则确有缺陷 → 开 issue 交维护者裁决。
+- 被 canon 拦下就修代码，**不改规则**。规则确有缺陷 → 开 issue 交维护者裁决。
 
 ### 收尾
 
