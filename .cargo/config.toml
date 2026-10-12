@@ -5,6 +5,7 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [build]
 # 多会话并发上限：每个 cargo 进程最多 4 个并行编译单元
 jobs = 4
-# sccache 跨 worktree 编译缓存
-# （勿用 [env] RUSTC_WRAPPER：cargo 启动时自读该变量，[env] 够不着）
-rustc-wrapper = "sccache"
+# sccache 跨 worktree 编译缓存：仅当环境里设置了 RUSTC_WRAPPER 才启用
+# （CI runner 无 sccache，硬编码 rustc-wrapper 会让所有构建炸在 exec 上；
+# 本机在 fish 配置里 set -gx RUSTC_WRAPPER sccache 开启）
+rustc-wrapper-env = "RUSTC_WRAPPER"
